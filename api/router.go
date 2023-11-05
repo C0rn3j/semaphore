@@ -1,22 +1,23 @@
 package api
 
 import (
+	"bytes"
+	"embed"
 	"fmt"
-	"github.com/ansible-semaphore/semaphore/api/runners"
+	"io/ioutil"
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/ansible-semaphore/semaphore/api/runners"
 
 	"github.com/ansible-semaphore/semaphore/api/helpers"
 	"github.com/ansible-semaphore/semaphore/api/projects"
 	"github.com/ansible-semaphore/semaphore/api/sockets"
 	"github.com/ansible-semaphore/semaphore/db"
 	"github.com/ansible-semaphore/semaphore/util"
-	"github.com/gobuffalo/packr"
 	"github.com/gorilla/mux"
 )
-
-var publicAssets2 = packr.NewBox("../web/dist")
 
 // StoreMiddleware WTF?
 func StoreMiddleware(next http.Handler) http.Handler {
@@ -308,6 +309,9 @@ func debugPrintRoutes(r *mux.Router) {
 	}
 }
 
+//go:embed web/dist/*
+var webAssets embed.FS
+
 // nolint: gocyclo
 func servePublic(w http.ResponseWriter, r *http.Request) {
 	webPath := "/"
@@ -315,67 +319,58 @@ func servePublic(w http.ResponseWriter, r *http.Request) {
 		webPath = util.WebHostURL.RequestURI()
 	}
 
-	path := r.URL.Path
+	// Assuming 'web/dist' is the root directory you want to serve files from
+	// and it's embedded into 'webAssets'
+	fileServer := http.FileServer(http.FS(webAssets))
 
-	if path == webPath+"api" || strings.HasPrefix(path, webPath+"api/") {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	if !strings.Contains(path, ".") {
+	path := strings.TrimPrefix(r.URL.Path, webPath)
+	if path == "" || path == "/" {
 		path = "/index.html"
 	}
 
-	path = strings.Replace(path, webPath+"/", "", 1)
-	split := strings.Split(path, ".")
-	suffix := split[len(split)-1]
+	// Directly pass the request to serve files to the file server
+	// Adjust the path for http.FileServer to properly locate the files
+	r.URL.Path = path
 
-	var res []byte
-	var err error
+	// Handle special case for index.html
+	if path == "/index.html" && util.WebHostURL != nil {
+		serveIndexWithBasePath(w, r, fileServer)
+		return
+	}
 
-	res, err = publicAssets2.MustBytes(path)
+	fileServer.ServeHTTP(w, r)
+}
 
+func serveIndexWithBasePath(w http.ResponseWriter, r *http.Request, fileServer http.Handler) {
+	// Open the index.html file
+	indexFile, err := webAssets.Open("web/dist/index.html")
 	if err != nil {
 		notFoundHandler(w, r)
 		return
 	}
+	defer indexFile.Close()
 
-	// replace base path
-	if util.WebHostURL != nil && path == "/index.html" {
-		baseURL := util.WebHostURL.String()
-		if !strings.HasSuffix(baseURL, "/") {
-			baseURL += "/"
-		}
-		res = []byte(strings.Replace(string(res),
-			"<base href=\"/\">",
-			"<base href=\""+baseURL+"\">",
-			1))
+	// Read the contents of the index.html file
+	indexContent, err := ioutil.ReadAll(indexFile)
+	if err != nil {
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
 	}
 
-	contentType := "text/plain"
-	switch suffix {
-	case "png":
-		contentType = "image/png"
-	case "jpg", "jpeg":
-		contentType = "image/jpeg"
-	case "gif":
-		contentType = "image/gif"
-	case "js":
-		contentType = "application/javascript"
-	case "css":
-		contentType = "text/css"
-	case "woff":
-		contentType = "application/x-font-woff"
-	case "ttf":
-		contentType = "application/x-font-ttf"
-	case "otf":
-		contentType = "application/x-font-otf"
-	case "html":
-		contentType = "text/html"
+	baseURL := util.WebHostURL.String()
+	if !strings.HasSuffix(baseURL, "/") {
+		baseURL += "/"
 	}
 
-	w.Header().Set("content-type", contentType)
-	_, err = w.Write(res)
+	// Replace the base path in the index.html content
+	indexContent = bytes.Replace(indexContent,
+		[]byte("<base href=\"/\">"),
+		[]byte("<base href=\""+baseURL+"\">"),
+		1)
+
+	// Write the modified content back to the response
+	w.Header().Set("content-type", "text/html")
+	_, err = w.Write(indexContent)
 	util.LogWarning(err)
 }
 

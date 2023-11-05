@@ -3,18 +3,18 @@ package sql
 import (
 	"database/sql"
 	"fmt"
+	"reflect"
+	"regexp"
+	"strconv"
+	"strings"
+
 	log "github.com/Sirupsen/logrus"
 	"github.com/ansible-semaphore/semaphore/db"
 	"github.com/ansible-semaphore/semaphore/util"
 	"github.com/go-gorp/gorp/v3"
 	_ "github.com/go-sql-driver/mysql" // imports mysql driver
-	"github.com/gobuffalo/packr"
 	_ "github.com/lib/pq"
 	"github.com/masterminds/squirrel"
-	"reflect"
-	"regexp"
-	"strconv"
-	"strings"
 )
 
 type SqlDb struct {
@@ -28,7 +28,6 @@ create table ` + "`migrations`" + ` (
 	` + "`notes`" + ` text null
 );
 `
-var dbAssets = packr.NewBox("./migrations")
 
 func containsStr(arr []string, str string) bool {
 	for _, a := range arr {

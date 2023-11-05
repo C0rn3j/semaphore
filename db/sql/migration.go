@@ -1,13 +1,17 @@
 package sql
 
 import (
+	"embed"
+	"errors"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
-	"github.com/ansible-semaphore/semaphore/db"
-	"github.com/go-gorp/gorp/v3"
+	"io/fs"
 	"regexp"
 	"strings"
 	"time"
+
+	log "github.com/Sirupsen/logrus"
+	"github.com/ansible-semaphore/semaphore/db"
+	"github.com/go-gorp/gorp/v3"
 )
 
 var (
@@ -32,18 +36,22 @@ func getVersionErrPath(version db.Migration) string {
 	return version.HumanoidVersion() + ".err.sql"
 }
 
-// getVersionSQL takes a path to an SQL file and returns it from packr as
+//go:embed migrations/*
+var dbAssets embed.FS
+
+// getVersionSQL takes a path to an SQL file and returns it from embed.FS as
 // a slice of strings separated by newlines
 func getVersionSQL(path string) (queries []string) {
-	sql, err := dbAssets.MustString(path)
+	sqlBytes, err := fs.ReadFile(dbAssets, path)
 	if err != nil {
-		panic(err)
+		return nil
 	}
+	sql := string(sqlBytes)
 	queries = strings.Split(strings.ReplaceAll(sql, ";\r\n", ";\n"), ";\n")
-	for i := range queries {
-		queries[i] = strings.Trim(queries[i], "\r\n\t ")
+	for i, query := range queries {
+		queries[i] = strings.TrimSpace(query)
 	}
-	return
+	return queries
 }
 
 // prepareMigration converts migration SQLite-query to current dialect.
@@ -186,14 +194,25 @@ func (d *SqlDb) ApplyMigration(migration db.Migration) error {
 
 // TryRollbackMigration attempts to rollback the database to an earlier version if a rollback exists
 func (d *SqlDb) TryRollbackMigration(version db.Migration) {
-	data := dbAssets.Bytes(getVersionErrPath(version))
-	if len(data) == 0 {
-		fmt.Println("Rollback SQL does not exist.")
-		fmt.Println()
+	rollbackPath := getVersionErrPath(version)
+
+	data, err := fs.ReadFile(dbAssets, rollbackPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			fmt.Println("Rollback SQL does not exist.")
+			fmt.Println()
+		} else {
+			fmt.Println("Error reading rollback file:", err)
+		}
 		return
 	}
 
-	queries := getVersionSQL(getVersionErrPath(version))
+	queries, err := getVersionSQL(rollbackPath)
+	if err != nil {
+		fmt.Println("Error getting version SQL:", err)
+		return
+	}
+
 	for _, query := range queries {
 		fmt.Printf(" [ROLLBACK] > %v\n", query)
 		q := d.prepareMigration(query)
